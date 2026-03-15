@@ -23,13 +23,14 @@ def view_data():
             print("No data found in raw_webhook_data table.")
             return
 
-        print(f"{'ID':<5} | {'Source':<10} | {'Event Type':<20} | {'Received At':<25}")
-        print("-" * 70)
+        print(f"{'ID':<5} | {'Source':<10} | {'Event Type':<20} | {'Received At':<25} | {'Payload':<30}")
+        print("-" * 105)
         
         for row in rows:
             received_at = str(row['received_at'])
             event_type = str(row['event_type']) if row['event_type'] else 'N/A'
-            print(f"{row['id']:<5} | {row['source']:<10} | {event_type:<20} | {received_at:<25}")
+            payload_peek = str(row['payload'])[:50] + "..." if len(str(row['payload'])) > 50 else str(row['payload'])
+            print(f"{row['id']:<5} | {row['source']:<10} | {event_type:<20} | {received_at:<25} | {payload_peek}")
             
     except Exception as e:
         print(f"Error: {e}")
