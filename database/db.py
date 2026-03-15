@@ -14,7 +14,9 @@ class RawWebhookData(Base):
     payload = Column(JSON, nullable=False)
     received_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-engine = create_engine('sqlite:///C:\\Users\\G.Rajesh\\.gemini\\antigravity\\scratch\\emiva-ingestion\\ingestion.db')
+from config import config
+
+engine = create_engine(config.DATABASE_URL)
 Session = sessionmaker(bind=engine)
 
 def init_db():

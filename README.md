@@ -1,13 +1,22 @@
 # Emiva Ingestion
 
-A Flask-based webhook ingestion service for collecting raw data from GitHub, Slack, and Jira. This service acts as a centralized collector, receiving events via webhooks and storing them in a persistent database for further processing.
+A Flask-based webhook ingestion service for collecting raw data from GitHub, Slack, and Jira. This service follows a decoupled architecture ensuring data integrity and extensibility.
 
 ## 🚀 Features
 
 - **Multi-Source Support**: Dedicated endpoints for GitHub, Slack, and Jira webhooks.
+- **Service Layer Architecture**: Decoupled API and Database layers for better processing logic.
+- **Configurable Storage**: Database URL can be set via environment variables.
 - **Persistent Storage**: Uses SQLite with SQLAlchemy for robust data management.
 - **Health Monitoring**: Integrated `/health` endpoint for status checks.
-- **Modular Architecture**: Separate connectors for each data source for easy extensibility.
+- **Diagnostics**: Built-in `view_data.py` tool for inspecting stored records.
+
+## 🏗️ Architecture
+
+The service follows a strict data flow:
+**API Layer** (Flask) → **Service Layer** (WebhookService) → **Database Layer** (SQLAlchemy)
+
+This ensures that the API endpoints are only responsible for receiving requests, while business logic and persistence are handled separately.
 
 ## 🛠️ Prerequisites
 
@@ -27,6 +36,14 @@ A Flask-based webhook ingestion service for collecting raw data from GitHub, Sla
    pip install -r requirements.txt
    ```
 
+## ⚙️ Configuration
+
+The application can be configured using environment variables:
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `DATABASE_URL` | SQLAlchemy connection string | `sqlite:///.../ingestion.db` |
+
 ## 🏃 Usage
 
 Start the Flask application:
@@ -36,6 +53,12 @@ python main.py
 ```
 
 The server will start on `http://localhost:5000`.
+
+### Viewing Data
+To inspect the latest records stored in the database, run:
+```bash
+python view_data.py
+```
 
 ## 🛣️ Endpoints
 
@@ -51,19 +74,16 @@ The server will start on `http://localhost:5000`.
 ```text
 emiva-ingestion/
 ├── connectors/         # Webhook handler logic for each source
-│   ├── github_connector.py
-│   ├── slack_connector.py
-│   └── jira_connector.py
-├── database/           # Database schema and initialization
-│   └── db.py
+├── database/           # Database schema and SQLAlchemy setup
+├── services/           # Service layer for business logic
+├── config.py           # Configuration management
 ├── main.py             # Application entry point and routing
+├── view_data.py        # Database inspection tool
 ├── requirements.txt    # Project dependencies
 └── README.md           # This file
 ```
 
 ## 🔄 How to Restart
-
-
 
 1. **Start the Flask Server**:
    ```bash
@@ -75,19 +95,3 @@ emiva-ingestion/
    ```bash
    ngrok http 5000
    ```
-
-3. **Update Endpoints**:
-   Take the new URL from the ngrok terminal and update your Webhook settings in GitHub, Slack, and Jira.
-
-## 📌 Pro Tip: Use a Free Static Domain
-To avoid updating your endpoints every time you restart, ngrok now offers **one free static domain** for all accounts.
-
-1. Go to your [ngrok Dashboard > Domains](https://dashboard.ngrok.com/cloud-edge/domains).
-2. Create your free domain (e.g., `your-name.ngrok-free.app`).
-3. Start ngrok with this domain instead:
-   ```bash
-   ngrok http --domain=your-name.ngrok-free.app 5000
-   ```
-4. Update your webhooks **once** with this static URL, and you'll never have to change them again!
-
-## 🤝 Contributing

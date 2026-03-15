@@ -1,5 +1,4 @@
 def handle_github_webhook(data, headers):
-    from database.db import save_raw_data
+    from services.webhook_service import webhook_service
     event_type = headers.get('X-GitHub-Event', 'unknown')
-    save_raw_data('github', data, event_type=event_type)
-    return {"status": "success"}, 200
+    return webhook_service.process_webhook_data('github', data, event_type=event_type)
