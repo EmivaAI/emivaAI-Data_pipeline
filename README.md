@@ -40,7 +40,7 @@ graph TD
 
 1.  **Clone the repository**:
     ```bash
-    git clone https://github.com/your-username/emiva-ingestion.git
+    git clone https://github.com/EmivaAI/emiva-ingestion.git
     cd emiva-ingestion
     ```
 
