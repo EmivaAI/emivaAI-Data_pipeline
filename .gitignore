@@ -8,6 +8,7 @@ venv/
 # Database
 *.db
 *.sqlite3
+database/ingestion.db
 ingestion.db
 test_override.db
 

@@ -1,141 +1,117 @@
 # Emiva Ingestion
 
-A robust, Flask-based webhook ingestion service designed for high-integrity raw data collection from **GitHub**, **Slack**, and **Jira**. This service utilizes a decoupled service-layer architecture to ensure data persistence is handled independently of the API endpoints, allowing for future scalability and reliability.
+A robust, Flask-based webhook ingestion service designed for high-integrity raw data collection and signal merging from **GitHub**, **Slack**, and **Jira**.
 
 ## 🚀 Features
 
--   **Multi-Source Ingestion**: Pre-configured, dedicated endpoints for GitHub, Slack, and Jira webhooks.
--   **Decoupled Architecture**: Separation of concerns between the API Layer (Flask), Service Layer, and Database Layer (SQLAlchemy).
--   **Source-Specific Logic**: intelligent handling for varying webhook formats (e.g., Slack's URL verification challenge).
--   **Configurable Persistence**: Easily switch between database backends via the `DATABASE_URL` environment variable.
--   **Automatic Schema Initialization**: Database tables are automatically created on first run.
--   **Diagnostic Tooling**: Built-in CLI tool (`view_data.py`) for real-time inspection of ingested data.
--   **Health Monitoring**: `/health` endpoint for integration with monitoring systems.
+-   **Multi-Source Ingestion**: Pre-configured, dedicated endpoints for GitHub, Slack, and Jira.
+-   **Stage 2 Signal Merging**: Intelligent logic to link Jira issues, GitHub PRs, and Slack discussions.
+-   **Automated Normalization**: Converts disparate JSON payloads into standard, queryable "Change Events".
+-   **Smart Classification**: Uses regex and keyword mapping to categorize changes (e.g., `bug_fix`, `feature`, `chore`).
+-   **Decoupled Architecture**: Separation of concerns between the API Layer, Service Layer, and Persistence Layer.
 
-## 🏗️ Architecture
+## 🏗️ Architecture & Workflow
 
-The system follows a strict hierarchical data flow to ensure clean separation of business logic and data persistence:
+The system operates in a three-stage pipeline to ensure data integrity and traceability.
+
+### 1. Ingestion Stage (Real-time)
+*   **API Layer (`main.py`)**: Receives high-frequency POST requests from external webhooks.
+*   **Connector Layer (`connectors/`)**: Handles source-specific parsing (headers, payload formats) and initial validation.
+*   **Raw Storage**: Saves every incoming signal into the `raw_webhook_data` table for auditability.
+
+### 2. Processing Stage (Async/Scheduled)
+*   **Signal Merger (`services/change_event_processor.py`)**: Runs independently to scan unprocessed raw data.
+*   **Entity Linking**: Uses Jira keys (e.g., `EMIVA-123`) found in PR descriptions or Slack messages to group related information.
+*   **Consolidation**: Stores the final, unified view of a change in the `change_event` table.
+
+### 3. Decisioning Stage (Downstream)
+*   The normalized `change_event` records serve as the primary input for Stage 3 logic (e.g., notifying stakeholders, triggering builds, or updating dashboards).
 
 ```mermaid
 graph TD
-    A[External Webhooks] -->|GitHub/Slack/Jira| B(API Layer - Flask)
-    B --> C(Connector Layer)
-    C --> D(Service Layer - WebhookService)
-    D --> E(Database Layer - SQLAlchemy)
-    E --> F[(SQLite/PostgreSQL/etc.)]
+    A[External Webhooks] -->|POST| B(API Layer)
+    B --> C{Source Connector}
+    C -->|GitHub| D[(raw_webhook_data)]
+    C -->|Slack| D
+    C -->|Jira| D
+    D -->|Process| E[ChangeEventProcessor]
+    E --> F[(change_event)]
+    F --> G[Stage 3 Decisioning]
 ```
 
--   **API Layer**: Receives HTTP POST requests and routes them to source-specific connectors.
--   **Connector Layer**: Parses headers and payloads to identify event types and extract relevant data.
--   **Service Layer**: Handles business logic, validation, and passes data to the persistence layer.
--   **Database Layer**: Manages SQLAlchemy models and database transactions.
+## 🛠️ Step-by-Step Setup
 
-## 🛠️ Prerequisites
+### 1. Environment Configuration
+Create a virtual environment and install the required packages:
+```bash
+python -m venv venv
+# Windows
+.\venv\Scripts\activate
+# Linux/Mac
+source venv/bin/activate
 
--   Python 3.8+
--   `pip` (Python package installer)
--   [ngrok](https://ngrok.com/) (for local testing of live webhooks)
+pip install -r requirements.txt
+```
 
-## 📦 Installation
+### 2. Database Initialization
+Ensure the database schema is initialized:
+```bash
+python -c "from database.db import init_db; init_db()"
+```
 
-1.  **Clone the repository**:
-    ```bash
-    git clone https://github.com/EmivaAI/emiva-ingestion.git
-    cd emiva-ingestion
-    ```
-
-2.  **Create and activate a virtual environment**:
-    ```bash
-    # Windows
-    python -m venv venv
-    .\venv\Scripts\activate
-
-    # Linux/MacOS
-    python3 -m venv venv
-    source venv/bin/activate
-    ```
-
-3.  **Install dependencies**:
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-## ⚙️ Configuration
-
-The application is configured using environment variables. You can set these in your shell or use a `.env` file (if supported by your runner).
-
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `DATABASE_URL` | SQLAlchemy connection string (Supports SQLite, PostgreSQL, etc.) | `sqlite:///.../ingestion.db` |
-| `FLASK_DEBUG` | Enable/Disable Flask debug mode | `True` |
-
-## 🏃 Usage
-
-Start the Flask server:
-
+### 3. Start Ingestion
+Launch the Flask server to begin capturing webhooks:
 ```bash
 python main.py
 ```
+*Note: Use **ngrok** (`ngrok http 5000`) for local development to expose your local server to the internet.*
 
-The server will start on `http://localhost:5000`.
-
-### 🔍 Viewing Ingested Data
-
-To inspect the latest 20 records stored in the database, use the built-in diagnostic tool:
-
+### 4. Process & Merge Signals
+Run the processor to consolidate raw signals into Change Events:
 ```bash
-python view_data.py
+python -m services.change_event_processor
 ```
 
-**Example Output:**
-```text
-ID    | Source     | Event Type           | Received At               | Payload
----------------------------------------------------------------------------------------------------------
-1     | github     | push                 | 2026-03-16 12:00:00       | {'ref': 'refs/heads/main', ...}
-2     | slack      | message              | 2026-03-16 12:05:00       | {'type': 'event_callback', ...}
-```
+## 🔍 Diagnostic Tools
 
-## 🛣️ API Endpoints
+The system includes pre-built scripts to monitor the data flow:
 
-| Endpoint | Method | Source | Header Requirements | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| `/webhooks/github` | `POST` | GitHub | `X-GitHub-Event` | Collects repository events (push, pull_request, etc.) |
-| `/webhooks/slack` | `POST` | Slack | N/A | Handles event subscriptions and URL verification |
-| `/webhooks/jira` | `POST` | Jira | N/A | Captures issue updates, sprint changes, etc. |
-| `/health` | `GET` | N/A | N/A | Returns `{"status": "healthy"}` |
+| Tool | Command | Description |
+| :--- | :--- | :--- |
+| **Raw Viewer** | `python view_data.py` | Inspect the last 20 raw webhook payloads received. |
+| **Change Viewer** | `python view_changes.py` | View the consolidated Change Events after processing. |
 
 ## 📁 Project Structure
 
-```text
-emiva-ingestion/
-├── connectors/         # Source-specific payload processing logic
-│   ├── github_connector.py
-│   ├── slack_connector.py
-│   └── jira_connector.py
-├── database/           # persistence layer
-│   ├── db.py           # SQLAlchemy setup and RawWebhookData model
-│   └── ingestion.db    # Default SQLite database (auto-generated)
-├── services/           # Core business logic layer
-│   └── webhook_service.py
-├── config.py           # Environment-based configuration management
-├── main.py             # Entry point and Flask route definitions
-├── view_data.py        # CLI diagnostic tool for data inspection
-├── requirements.txt    # List of Python dependencies
-└── README.md           # Project documentation
-```
+- `connectors/`: Logic for parsing GitHub, Slack, and Jira payloads.
+- `database/`: SQLAlchemy models (`RawWebhookData`, `ChangeEvent`).
+- `services/`: Business logic and processing (`webhook_service`, `change_event_processor`).
+- `main.py`: Entry point for the Flask API.
+- `config.py`: Environment-based configurations.
 
-## 🌐 Local Development with ngrok
+## 📊 Sample Data Examples
 
-To test live webhooks from GitHub, Slack, or Jira on your local machine:
+### 1. Raw Webhook Data (`raw_webhook_data`)
+The initial signals captured from each source.
 
-1.  Start the Flask server (`python main.py`).
-2.  In a new terminal, run ngrok:
-    ```bash
-    ngrok http 5000
-    ```
-3.  Copy the provided `https` URL (e.g., `https://a1b2c3d4.ngrok.app`).
-4.  Configure your webhook in GitHub/Slack/Jira to point to `<your-ngrok-url>/webhooks/<source>`.
+| Source | Event Type | Summary (from payload) | Received At |
+| :--- | :--- | :--- | :--- |
+| `jira` | `issue_updated` | Bug: Fix login crash on iOS | 2026-03-17 10:00:00 |
+| `github` | `pull_request` | Fix for EMIVA-101: added null checks | 2026-03-17 10:30:00 |
+| `slack` | `message` | Found the cause for EMIVA-101... | 2026-03-17 10:45:00 |
+| `jira` | `issue_created` | Feature: Implement Magic Link Auth | 2026-03-17 11:00:00 |
+| `github` | `pull_request` | feat: EMIVA-102 magic link... | 2026-03-17 11:15:00 |
+
+### 2. Consolidated Change Events (`change_event`)
+The high-integrity output after the `ChangeEventProcessor` merges related signals.
+
+| Type | Component | Issues | Actors | Summary |
+| :--- | :--- | :--- | :--- | :--- |
+| `bug_fix` | `Mobile App` | `EMIVA-101` | `Dev Rajesh`, `rajesh_dev` | Fix login crash on iOS |
+| `feature` | `Auth Service` | `EMIVA-102` | `Dev Rajesh`, `rajesh_dev` | Implement Magic Link Auth |
+| `chore` | `Backend` | `EMIVA-103` | `Dev Rajesh` | Update API Documentation |
+| `bug_fix` | `Infrastructure` | `EMIVA-104` | `Dev Rajesh` | Database connection leak |
+| `feature` | `Frontend` | `EMIVA-105` | `Dev Rajesh` | Optimize Dashboard Queries |
 
 ---
-
-Developed as part of the **EmivaAI Ingestion Pipeline**.
+Developed for the **EmivaAI Ingestion Pipeline**.
