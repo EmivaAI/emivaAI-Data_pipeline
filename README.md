@@ -21,8 +21,8 @@ The system operates in a three-stage pipeline to ensure data integrity and trace
 *   **Connector Layer (`connectors/`)**: Handles source-specific parsing (headers, payload formats) and initial validation.
 *   **Source Table**: Saves every incoming signal into the `source_event` table for auditability.
 
-### 2. Processing Stage (Async/Scheduled)
-*   **Signal Merger (`services/change_event_processor.py`)**: Runs independently to scan unprocessed raw data.
+### 2. Processing Stage (Immediate)
+*   **Signal Merger (`services/change_event_processor.py`)**: Triggered automatically after every raw signal is saved.
 *   **Entity Linking**: Uses Jira keys (e.g., `ENG-1001`) found in PR descriptions or Slack messages to group related information.
 *   **Consolidation**: Stores the final, unified view of a change in the `change_event` table, linking it to the primary source event.
 
