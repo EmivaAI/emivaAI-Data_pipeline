@@ -11,26 +11,24 @@ def view_data():
         cur = conn.cursor()
         
         # Check if table exists first
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='raw_webhook_data'")
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='source_event'")
         if not cur.fetchone():
-            print("Table 'raw_webhook_data' does not exist yet. Send some webhooks first!")
+            print("Table 'source_event' does not exist yet. Send some webhooks first!")
             return
 
-        cur.execute("SELECT * FROM raw_webhook_data ORDER BY id DESC LIMIT 20")
+        cur.execute("SELECT * FROM source_event ORDER BY created_at DESC LIMIT 20")
         rows = cur.fetchall()
         
         if not rows:
-            print("No data found in raw_webhook_data table.")
+            print("No data found in source_event table.")
             return
 
-        print(f"{'ID':<5} | {'Source':<10} | {'Event Type':<20} | {'Received At':<25} | {'Payload':<30}")
+        print(f"{'ID':<38} | {'Source':<10} | {'Workspace':<20} | {'Created At':<25}")
         print("-" * 105)
         
         for row in rows:
-            received_at = str(row['received_at'])
-            event_type = str(row['event_type']) if row['event_type'] else 'N/A'
-            payload_peek = str(row['payload'])[:50] + "..." if len(str(row['payload'])) > 50 else str(row['payload'])
-            print(f"{row['id']:<5} | {row['source']:<10} | {event_type:<20} | {received_at:<25} | {payload_peek}")
+            created_at = str(row['created_at'])
+            print(f"{row['id']:<38} | {row['source_type']:<10} | {row['workspace_id']:<20} | {created_at:<25}")
             
     except Exception as e:
         print(f"Error: {e}")

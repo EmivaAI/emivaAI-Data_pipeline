@@ -5,9 +5,11 @@ A robust, Flask-based webhook ingestion service designed for high-integrity raw 
 ## 🚀 Features
 
 -   **Multi-Source Ingestion**: Pre-configured, dedicated endpoints for GitHub, Slack, and Jira.
+-   **UUID-Based Architecture**: High-collision resistance using UUIDs for all primary and foreign keys.
+-   **Multi-Tenancy Support**: Built-in `workspace_id` for isolated data processing across organizations.
 -   **Stage 2 Signal Merging**: Intelligent logic to link Jira issues, GitHub PRs, and Slack discussions.
--   **Automated Normalization**: Converts disparate JSON payloads into standard, queryable "Change Events".
--   **Smart Classification**: Uses regex and keyword mapping to categorize changes (e.g., `bug_fix`, `feature`, `chore`).
+-   **Automated Normalization**: Converts disparate JSON payloads into standard, queryable "Source Events".
+-   **Direct Traceability**: Each `ChangeEvent` is directly linked to its primary trigger `SourceEvent`.
 -   **Decoupled Architecture**: Separation of concerns between the API Layer, Service Layer, and Persistence Layer.
 
 ## 🏗️ Architecture & Workflow
@@ -17,21 +19,21 @@ The system operates in a three-stage pipeline to ensure data integrity and trace
 ### 1. Ingestion Stage (Real-time)
 *   **API Layer (`main.py`)**: Receives high-frequency POST requests from external webhooks.
 *   **Connector Layer (`connectors/`)**: Handles source-specific parsing (headers, payload formats) and initial validation.
-*   **Raw Storage**: Saves every incoming signal into the `raw_webhook_data` table for auditability.
+*   **Source Table**: Saves every incoming signal into the `source_event` table for auditability.
 
 ### 2. Processing Stage (Async/Scheduled)
 *   **Signal Merger (`services/change_event_processor.py`)**: Runs independently to scan unprocessed raw data.
-*   **Entity Linking**: Uses Jira keys (e.g., `EMIVA-123`) found in PR descriptions or Slack messages to group related information.
-*   **Consolidation**: Stores the final, unified view of a change in the `change_event` table.
+*   **Entity Linking**: Uses Jira keys (e.g., `ENG-1001`) found in PR descriptions or Slack messages to group related information.
+*   **Consolidation**: Stores the final, unified view of a change in the `change_event` table, linking it to the primary source event.
 
 ### 3. Decisioning Stage (Downstream)
-*   The normalized `change_event` records serve as the primary input for Stage 3 logic (e.g., notifying stakeholders, triggering builds, or updating dashboards).
+*   The normalized `change_event` records serve as the primary input for Stage 3 logic (reporting, dashboards, or automation).
 
 ```mermaid
 graph TD
     A[External Webhooks] -->|POST| B(API Layer)
     B --> C{Source Connector}
-    C -->|GitHub| D[(raw_webhook_data)]
+    C -->|GitHub| D[(source_event)]
     C -->|Slack| D
     C -->|Jira| D
     D -->|Process| E[ChangeEventProcessor]
@@ -64,7 +66,6 @@ Launch the Flask server to begin capturing webhooks:
 ```bash
 python main.py
 ```
-*Note: Use **ngrok** (`ngrok http 5000`) for local development to expose your local server to the internet.*
 
 ### 4. Process & Merge Signals
 Run the processor to consolidate raw signals into Change Events:
@@ -78,40 +79,33 @@ The system includes pre-built scripts to monitor the data flow:
 
 | Tool | Command | Description |
 | :--- | :--- | :--- |
-| **Raw Viewer** | `python view_data.py` | Inspect the last 20 raw webhook payloads received. |
+| **Source Viewer** | `python view_data.py` | Inspect the last 20 source events received. |
 | **Change Viewer** | `python view_changes.py` | View the consolidated Change Events after processing. |
 
 ## 📁 Project Structure
 
 - `connectors/`: Logic for parsing GitHub, Slack, and Jira payloads.
-- `database/`: SQLAlchemy models (`RawWebhookData`, `ChangeEvent`).
+- `database/`: SQLAlchemy models (`SourceEvent`, `ChangeEvent`).
 - `services/`: Business logic and processing (`webhook_service`, `change_event_processor`).
 - `main.py`: Entry point for the Flask API.
-- `config.py`: Environment-based configurations.
 
 ## 📊 Sample Data Examples
 
-### 1. Raw Webhook Data (`raw_webhook_data`)
-The initial signals captured from each source.
+### 1. Source Events (`source_event`)
+Initial signals with UUIDs and workspace context.
 
-| Source | Event Type | Summary (from payload) | Received At |
+| ID (UUID) | Source Type | Workspace ID | Created At |
 | :--- | :--- | :--- | :--- |
-| `jira` | `issue_updated` | Bug: Fix login crash on iOS | 2026-03-17 10:00:00 |
-| `github` | `pull_request` | Fix for EMIVA-101: added null checks | 2026-03-17 10:30:00 |
-| `slack` | `message` | Found the cause for EMIVA-101... | 2026-03-17 10:45:00 |
-| `jira` | `issue_created` | Feature: Implement Magic Link Auth | 2026-03-17 11:00:00 |
-| `github` | `pull_request` | feat: EMIVA-102 magic link... | 2026-03-17 11:15:00 |
+| `e6a844...` | `jira` | `alpha-uuid` | 2026-03-18 14:00:00 |
+| `36d9ea...` | `github` | `beta-uuid` | 2026-03-18 14:30:00 |
 
 ### 2. Consolidated Change Events (`change_event`)
-The high-integrity output after the `ChangeEventProcessor` merges related signals.
+High-integrity output with ticket metadata and direct source links.
 
-| Type | Component | Issues | Actors | Summary |
+| ID (UUID) | Type | Component | Title | Ticket ID |
 | :--- | :--- | :--- | :--- | :--- |
-| `bug_fix` | `Mobile App` | `EMIVA-101` | `Dev Rajesh`, `rajesh_dev` | Fix login crash on iOS |
-| `feature` | `Auth Service` | `EMIVA-102` | `Dev Rajesh`, `rajesh_dev` | Implement Magic Link Auth |
-| `chore` | `Backend` | `EMIVA-103` | `Dev Rajesh` | Update API Documentation |
-| `bug_fix` | `Infrastructure` | `EMIVA-104` | `Dev Rajesh` | Database connection leak |
-| `feature` | `Frontend` | `EMIVA-105` | `Dev Rajesh` | Optimize Dashboard Queries |
+| `06dc5c...` | `feature` | `Security` | [ENG-1000] Add per-user rate limiting | `ENG-1000` |
+| `682703...` | `bug_fix` | `Mobile` | [ENG-1001] Fix login crash on iOS | `ENG-1001` |
 
 ---
 Developed for the **EmivaAI Ingestion Pipeline**.

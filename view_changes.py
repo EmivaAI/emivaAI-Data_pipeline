@@ -14,20 +14,19 @@ def view_changes():
             print("Table 'change_event' does not exist yet. Run the processor first!")
             return
 
-        cur.execute("SELECT * FROM change_event ORDER BY timestamp DESC")
+        cur.execute("SELECT * FROM change_event ORDER BY created_at DESC")
         rows = cur.fetchall()
         
         if not rows:
             print("No consolidated changes found.")
             return
 
-        print(f"{'ID':<3} | {'Type':<10} | {'Component':<15} | {'Issues':<15} | {'Actors':<20} | {'Summary':<30}")
-        print("-" * 105)
+        print(f"{'ID':<38} | {'Type':<10} | {'Component':<15} | {'Issues':<15} | {'Title':<30}")
+        print("-" * 120)
         
         for row in rows:
             issues = ", ".join(json.loads(row['linked_issues'])) if row['linked_issues'] else 'N/A'
-            actors = ", ".join(json.loads(row['actors'])) if row['actors'] else 'N/A'
-            print(f"{row['id']:<3} | {row['change_type']:<10} | {row['component']:<15} | {issues:<15} | {actors:<20} | {row['summary'][:30]}")
+            print(f"{row['id']:<38} | {row['change_type']:<10} | {row['component']:<15} | {issues:<15} | {row['title'][:30]}")
             
     except Exception as e:
         print(f"Error: {e}")

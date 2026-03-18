@@ -1,6 +1,6 @@
 import re
 import json
-from database.db import Session, RawWebhookData, ChangeEvent
+from database.db import Session, SourceEvent, ChangeEvent
 from sqlalchemy import or_
 
 def extract_jira_keys(text):
@@ -49,8 +49,8 @@ def determine_change_type(jira_issue_type, pr_labels, pr_title, summary=""):
 def process_unprocessed_events():
     session = Session()
     try:
-        # 1. Selection: Fetch all RawWebhookData where processed=False
-        unprocessed_events = session.query(RawWebhookData).filter(RawWebhookData.processed == False).all()
+        # 1. Selection: Fetch all SourceEvent where processed=False
+        unprocessed_events = session.query(SourceEvent).filter(SourceEvent.processed == False).all()
         if not unprocessed_events:
             print("No new events to process.")
             return
@@ -65,18 +65,18 @@ def process_unprocessed_events():
         # First pass: map Jira events and find common keys
         for event in unprocessed_events:
             keys = []
-            if event.source == 'jira':
-                issue_key = event.payload.get('issue', {}).get('key')
+            if event.source_type == 'jira':
+                issue_key = event.raw_payload.get('issue', {}).get('key')
                 if issue_key:
                     keys.append(issue_key)
             else:
                 # Search in payload for mentions
                 text_to_search = ""
-                if event.source == 'github':
-                    text_to_search = event.payload.get('pull_request', {}).get('title', '') + " " + \
-                                     event.payload.get('pull_request', {}).get('body', '')
-                elif event.source == 'slack':
-                    text_to_search = event.payload.get('event', {}).get('text', '')
+                if event.source_type == 'github':
+                    text_to_search = event.raw_payload.get('pull_request', {}).get('title', '') + " " + \
+                                     event.raw_payload.get('pull_request', {}).get('body', '')
+                elif event.source_type == 'slack':
+                    text_to_search = event.raw_payload.get('event', {}).get('text', '')
                 
                 keys = extract_jira_keys(text_to_search)
 
@@ -96,15 +96,14 @@ def process_unprocessed_events():
 
         # 3. Process orphans (e.g. PRs without Jira keys)
         for event in orphan_events:
-            if event.source == 'github' and 'pull_request' in event.payload:
+            if event.source_type == 'github' and 'pull_request' in event.raw_payload:
                 consolidate_and_save(session, [event], None)
             else:
                 # Other orphans (like Slack messages or Github stars) might not be "changes"
-                # For now, mark them processed but don't create a ChangeEvent unless they are PRD relevant
                 pass
 
         # 4. State Management: Mark as processed
-        session.query(RawWebhookData).filter(RawWebhookData.id.in_(processed_ids)).update({"processed": True}, synchronize_session=False)
+        session.query(SourceEvent).filter(SourceEvent.id.in_(processed_ids)).update({"processed": True}, synchronize_session=False)
         session.commit()
         print("Processing complete.")
 
@@ -115,14 +114,20 @@ def process_unprocessed_events():
         session.close()
 
 def consolidate_and_save(session, events, jira_key):
-    source_ids = [e.id for e in events]
-    
     # Extract data from events
-    jira_event = next((e for e in events if e.source == 'jira'), None)
-    github_event = next((e for e in events if e.source == 'github' and 'pull_request' in e.payload), None)
-    slack_events = [e for e in events if e.source == 'slack']
+    jira_event = next((e for e in events if e.source_type == 'jira'), None)
+    github_event = next((e for e in events if e.source_type == 'github' and 'pull_request' in e.raw_payload), None)
+    slack_events = [e for e in events if e.source_type == 'slack']
     
-    summary = "Consolidated Event"
+    # Primary event for the source_event_id linkage
+    primary_event = jira_event or github_event or (slack_events[0] if slack_events else events[0])
+    
+    workspace_id = primary_event.workspace_id
+    ticket_id = jira_key
+    title = "Consolidated Event"
+    description = ""
+    ticket_url = ""
+    
     change_type = "unknown"
     component = "Unknown"
     severity = "medium"
@@ -138,15 +143,18 @@ def consolidate_and_save(session, events, jira_key):
     
     # Use Jira as source of truth if available
     if jira_event:
-        issue = jira_event.payload.get('issue', {})
+        issue = jira_event.raw_payload.get('issue', {})
         fields = issue.get('fields', {})
-        summary = fields.get('summary', summary)
+        title = fields.get('summary', title)
+        description = fields.get('description', "")
+        ticket_url = f"https://emiva.atlassian.net/browse/{jira_key}" if jira_key else ""
+        
         component = fields.get('project', {}).get('name', component)
         severity = fields.get('priority', {}).get('name', 'medium').lower()
-        actors.add(jira_event.payload.get('user', {}).get('displayName'))
+        actors.add(jira_event.raw_payload.get('user', {}).get('displayName'))
         
         jira_issue_type = fields.get('issuetype', {}).get('name')
-        change_type = determine_change_type(jira_issue_type, [], "", summary=summary)
+        change_type = determine_change_type(jira_issue_type, [], "", summary=title)
         
         status = fields.get('status', {}).get('name')
         if status in ['Done', 'Resolved', 'Closed']:
@@ -154,36 +162,38 @@ def consolidate_and_save(session, events, jira_key):
 
     # Layer Github info
     if github_event:
-        pr = github_event.payload.get('pull_request', {})
+        pr = github_event.raw_payload.get('pull_request', {})
         if not jira_event:
-            summary = pr.get('title', summary)
-            component = github_event.payload.get('repository', {}).get('name', component)
+            title = pr.get('title', title)
+            description = pr.get('body', "")
+            ticket_url = pr.get('html_url', "")
+            component = github_event.raw_payload.get('repository', {}).get('name', component)
         
         linked_prs.append(pr.get('number'))
         actors.add(pr.get('user', {}).get('login'))
         
         if change_type == "unknown":
             labels = [l.get('name') for l in pr.get('labels', [])]
-            change_type = determine_change_type(None, labels, pr.get('title'), summary=summary)
+            change_type = determine_change_type(None, labels, pr.get('title'), summary=title)
             
-        if pr.get('merged') or github_event.payload.get('action') == 'closed':
+        if pr.get('merged') or github_event.raw_payload.get('action') == 'closed':
              raw_signals['pr_merged'] = True
 
     # Layer Slack info
     for se in slack_events:
-        thread_ts = se.payload.get('event', {}).get('thread_ts')
+        thread_ts = se.raw_payload.get('event', {}).get('thread_ts')
         if thread_ts:
             linked_threads.append(thread_ts)
-        actors.add(se.payload.get('event', {}).get('user'))
+        actors.add(se.raw_payload.get('event', {}).get('user'))
 
-    # Check if a ChangeEvent for this Jira key already exists to update it
+    # Check if a ChangeEvent for this Jira key already exists
     existing_change = None
     if jira_key:
+        # Use JSON function if supported, or just simple check
         existing_change = session.query(ChangeEvent).filter(ChangeEvent.linked_issues.contains(jira_key)).first()
 
     if existing_change:
         # Update existing
-        existing_change.source_event_ids = list(set(existing_change.source_event_ids + source_ids))
         existing_change.linked_prs = list(set(existing_change.linked_prs + linked_prs))
         existing_change.linked_threads = list(set(existing_change.linked_threads + linked_threads))
         existing_change.actors = list(set(existing_change.actors + list(filter(None, actors))))
@@ -192,10 +202,14 @@ def consolidate_and_save(session, events, jira_key):
     else:
         # Create new
         new_change = ChangeEvent(
-            source_event_ids=source_ids,
+            workspace_id=workspace_id,
+            source_event_id=primary_event.id,
+            external_ticket_id=ticket_id,
+            title=title,
+            description=description,
+            ticket_url=ticket_url,
             change_type=change_type,
             component=component,
-            summary=summary,
             severity=severity,
             linked_issues=linked_issues,
             linked_prs=linked_prs,
@@ -205,6 +219,9 @@ def consolidate_and_save(session, events, jira_key):
         )
         session.add(new_change)
         print(f"Created new ChangeEvent for {jira_key or 'Orphan'}")
+
+if __name__ == "__main__":
+    process_unprocessed_events()
 
 if __name__ == "__main__":
     process_unprocessed_events()

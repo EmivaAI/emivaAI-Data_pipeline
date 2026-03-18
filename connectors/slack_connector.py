@@ -9,4 +9,4 @@ def handle_slack_webhook(data, headers):
     if event_type == 'event_callback':
         event_type = data.get('event', {}).get('type', 'unknown')
         
-    return webhook_service.process_webhook_data('slack', data, event_type=event_type)
+    return webhook_service.process_webhook_data('slack', data)
