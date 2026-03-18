@@ -31,52 +31,70 @@ graph TD
     F --> G[Downstream Analytics]
 ```
 
-## 🛠️ Quick Start
+## 🛠️ Step-by-Step Setup
 
-### 1. Setup Environment
+### 1. Code & Environment Setup
+Clone the repository and prepare a Python environment:
 ```bash
+# Clone the project
+git clone https://github.com/EmivaAI/emivaAI-Data_pipeline.git
+cd emivaAI-Data_pipeline
+
+# Setup Virtual Environment
 python -m venv venv
-# Windows: .\venv\Scripts\activate | Linux: source venv/bin/activate
+# Windows: .\venv\Scripts\activate | Mac/Linux: source venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Initialize Database
+### 2. Database Initialization
+Create your local SQLite database file:
 ```bash
 python -c "from database.db import init_db; init_db()"
 ```
 
-### 3. Start Ingesting
+### 3. Expose the Server (ngrok)
+External tools like Jira and GitHub require a public URL to send webhooks. Use **ngrok** to expose your local server:
+1.  Launch ngrok in a new terminal: `ngrok http 5000`
+2.  Copy the **Forwarding URL** (e.g., `https://a1b2-c3d4.ngrok-free.app`).
+
+### 4. Configure Webhooks
+Point your tools to your ngrok URL + the source-specific path:
+*   **Jira**: `https://YOUR_URL/webhooks/jira`
+*   **GitHub**: `https://YOUR_URL/webhooks/github`
+*   **Slack**: `https://YOUR_URL/webhooks/slack`
+
+### 5. Start Ingesting
+Run the server to begin capturing and auto-processing data:
 ```bash
 python main.py
 ```
-> [!TIP]
-> Use **ngrok** (`ngrok http 5000`) for local development to expose your server to the internet.
 
 ---
 
-## 🔍 Tools & Inspection
+## 🔍 Diagnostic Tools
 
-| Command | Purpose |
-| :--- | :--- |
-| `python view_data.py` | Inspect the latest raw **Source Events**. |
-| `python view_changes.py` | View the consolidated **Change Events**. |
+The system includes pre-built scripts to monitor the data flow:
 
-## 📁 Project Structure
+| Tool | Command | Description |
+| :--- | :--- | :--- |
+| **Source Viewer** | `python view_data.py` | Inspect the last 20 raw webhook payloads received. |
+| **Change Viewer** | `python view_changes.py` | View the consolidated Change Events after processing. |
 
-*   `connectors/`: Source-specific parsers (headers, payload routing).
-*   `database/`: SQLAlchemy models and persistence logic.
-*   `services/`: Core logic for webhook handling and signal consolidation.
-*   `main.py`: Entry point for the Flask API.
+## 📊 Sample Data Examples
 
-## 📊 Output Examples
+### 1. Source Events (`source_event`)
+Initial signals with UUIDs and workspace context.
 
-### Source Events (`source_event`)
 | ID (UUID) | Source Type | Workspace ID | Created At |
 | :--- | :--- | :--- | :--- |
 | `e6a844...` | `jira` | `alpha-uuid` | 2026-03-18 14:00:00 |
 | `36d9ea...` | `github` | `beta-uuid` | 2026-03-18 14:30:00 |
 
-### Change Events (`change_event`)
+### 2. Consolidated Change Events (`change_event`)
+High-integrity output with ticket metadata and direct source links.
+
 | ID (UUID) | Type | Component | Title | Ticket ID |
 | :--- | :--- | :--- | :--- | :--- |
 | `06dc5c...` | `feature` | `Security` | [ENG-1000] Add per-user rate limiting | `ENG-1000` |
