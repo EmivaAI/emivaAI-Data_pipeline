@@ -66,6 +66,8 @@ Launch the Flask server to begin capturing webhooks:
 ```bash
 python main.py
 ```
+> [!TIP]
+> Use **ngrok** (`ngrok http 5000`) for local development to expose your local server to the internet for receiving live webhooks.
 
 ### 4. Process & Merge Signals
 Run the processor to consolidate raw signals into Change Events:
