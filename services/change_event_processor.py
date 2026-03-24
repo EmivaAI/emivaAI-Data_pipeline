@@ -1,227 +1,229 @@
 import re
 import json
 from database.db import Session, SourceEvent, ChangeEvent
-from sqlalchemy import or_
 
-def extract_jira_keys(text):
-    """Extracts Jira keys like EMIVA-123 from text."""
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def extract_jira_key(text: str):
+    """Return the first Jira key (e.g. EMIVA-123) found in text, or None."""
     if not text:
-        return []
-    return re.findall(r'[A-Z]+-\d+', text)
+        return None
+    match = re.search(r'[A-Z]+-\d+', text)
+    return match.group(0) if match else None
 
-def determine_change_type(jira_issue_type, pr_labels, pr_title, summary=""):
-    """Logic provided by user to determine change type."""
-    # Priority 1: Jira issue type
+
+def determine_change_type(issue_type: str = None, pr_title: str = None, summary: str = "") -> str:
+    """Determine change_type from available metadata."""
     mapping = {
         "Bug":         "bug_fix",
-        "Story":       "feature", 
+        "Story":       "feature",
         "Task":        "chore",
         "Epic":        "feature",
         "Improvement": "feature",
     }
-    if jira_issue_type in mapping:
-        return mapping[jira_issue_type]
-    
-    # Priority 2: Summary/Title keywords
-    full_text = f"{pr_title if pr_title else ''} {summary if summary else ''} {jira_issue_type if jira_issue_type else ''}".lower()
-    if full_text.startswith("bug") or "fix" in full_text: return "bug_fix"
-    if full_text.startswith("feat"): return "feature"
-    if full_text.startswith("chore"): return "chore"
-    if "critical" in full_text: return "bug_fix"
-    if "docs" in full_text: return "docs"
-    
-    # Priority 3: PR title prefix
+    if issue_type and issue_type in mapping:
+        return mapping[issue_type]
+
+    text = " ".join(filter(None, [pr_title, summary, issue_type])).lower()
+    if "fix" in text or text.startswith("bug"):   return "bug_fix"
+    if text.startswith("feat"):                   return "feature"
+    if text.startswith("chore"):                  return "chore"
+    if "critical" in text:                        return "bug_fix"
+    if "docs" in text:                            return "docs"
+
     if pr_title:
-        title = pr_title.lower()
-        if title.startswith("fix"):      return "bug_fix"
-        if title.startswith("feat"):     return "feature"
-        if title.startswith("chore"):    return "chore"
-        if title.startswith("docs"):     return "docs"
-        if title.startswith("refactor"): return "chore"
-    
-    # Priority 4: PR labels
-    if pr_labels:
-        if "bug" in pr_labels:     return "bug_fix"
-        if "feature" in pr_labels: return "feature"
-    
+        t = pr_title.lower()
+        if t.startswith("fix"):      return "bug_fix"
+        if t.startswith("feat"):     return "feature"
+        if t.startswith("chore"):    return "chore"
+        if t.startswith("docs"):     return "docs"
+        if t.startswith("refactor"): return "chore"
+
     return "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Per-source preprocessors
+# ---------------------------------------------------------------------------
+
+def preprocess_jira(payload: dict) -> dict:
+    issue  = payload.get('issue', {})
+    fields = issue.get('fields', {})
+    key    = issue.get('key')
+    summary     = fields.get('summary', '')
+    description = fields.get('description', '')
+    priority    = fields.get('priority', {}).get('name', 'medium').lower()
+    status      = fields.get('status', {}).get('name', '')
+    issue_type  = fields.get('issuetype', {}).get('name')
+    component   = fields.get('project', {}).get('name', 'Unknown')
+    actor       = payload.get('user', {}).get('displayName')
+
+    return {
+        "external_ticket_id": key,
+        "title":       summary,
+        "description": description,
+        "ticket_url":  f"https://emiva.atlassian.net/browse/{key}" if key else "",
+        "change_type": determine_change_type(issue_type=issue_type, summary=summary),
+        "component":   component,
+        "severity":    priority,
+        "actors":      [actor] if actor else [],
+        "raw_signals": {
+            "issue_status":   status,
+            "issue_resolved": status in ['Done', 'Resolved', 'Closed'],
+        },
+    }
+
+
+def preprocess_github(payload: dict) -> dict:
+    pr  = payload.get('pull_request', {})
+    repo = payload.get('repository', {}).get('name', 'Unknown')
+
+    if pr:
+        # Pull-request event
+        title  = pr.get('title', '')
+        body   = pr.get('body', '') or ''
+        actor  = pr.get('user', {}).get('login')
+        labels = [l.get('name') for l in pr.get('labels', [])]
+        merged = pr.get('merged') or payload.get('action') == 'closed'
+
+        # Try to find a Jira key in title or body
+        jira_key = extract_jira_key(f"{title} {body}")
+
+        return {
+            "external_ticket_id": jira_key,
+            "title":       title,
+            "description": body,
+            "ticket_url":  pr.get('html_url', ''),
+            "change_type": determine_change_type(pr_title=title),
+            "component":   repo,
+            "severity":    "medium",
+            "actors":      [actor] if actor else [],
+            "raw_signals": {
+                "pr_number": pr.get('number'),
+                "pr_merged": merged,
+                "pr_labels": labels,
+            },
+        }
+
+    # Push event
+    commits = payload.get('commits', [])
+    messages = [c.get('message', '') for c in commits]
+    first_msg = messages[0] if messages else ''
+    actor = payload.get('pusher', {}).get('name')
+
+    return {
+        "external_ticket_id": extract_jira_key(first_msg),
+        "title":       f"Push to {repo}: {first_msg[:80]}",
+        "description": "\n".join(messages),
+        "ticket_url":  payload.get('compare', ''),
+        "change_type": determine_change_type(pr_title=first_msg),
+        "component":   repo,
+        "severity":    "medium",
+        "actors":      [actor] if actor else [],
+        "raw_signals": {
+            "push_ref":     payload.get('ref'),
+            "commit_count": len(commits),
+        },
+    }
+
+
+def preprocess_slack(payload: dict) -> dict:
+    event  = payload.get('event', {})
+    text   = event.get('text', '')
+    actor  = event.get('user')
+    thread = event.get('thread_ts')
+    channel = event.get('channel')
+    jira_key = extract_jira_key(text)
+
+    return {
+        "external_ticket_id": jira_key,
+        "title":       f"Slack message: {text[:120]}",
+        "description": text,
+        "ticket_url":  "",
+        "change_type": "unknown",
+        "component":   "slack",
+        "severity":    "low",
+        "actors":      [actor] if actor else [],
+        "raw_signals": {
+            "channel":   channel,
+            "thread_ts": thread,
+            "has_thread": thread is not None,
+        },
+    }
+
+
+PREPROCESSORS = {
+    "jira":   preprocess_jira,
+    "github": preprocess_github,
+    "slack":  preprocess_slack,
+}
+
+
+# ---------------------------------------------------------------------------
+# Main processor
+# ---------------------------------------------------------------------------
 
 def process_unprocessed_events():
     session = Session()
     try:
-        # 1. Selection: Fetch all SourceEvent where processed=False
-        unprocessed_events = session.query(SourceEvent).filter(SourceEvent.processed == False).all()
-        if not unprocessed_events:
+        unprocessed = (
+            session.query(SourceEvent)
+            .filter(SourceEvent.processed == False)
+            .all()
+        )
+
+        if not unprocessed:
             print("No new events to process.")
             return
 
-        print(f"Processing {len(unprocessed_events)} new events...")
+        print(f"Processing {len(unprocessed)} new event(s)...")
 
-        # Group events by Jira Key
-        jira_to_events = {}
-        processed_ids = []
-        orphan_events = []
+        for event in unprocessed:
+            preprocessor = PREPROCESSORS.get(event.source_type)
+            if not preprocessor:
+                print(f"  [SKIP] Unknown source_type '{event.source_type}' for event {event.id}")
+                event.processed = True
+                continue
 
-        # First pass: map Jira events and find common keys
-        for event in unprocessed_events:
-            keys = []
-            if event.source_type == 'jira':
-                issue_key = event.raw_payload.get('issue', {}).get('key')
-                if issue_key:
-                    keys.append(issue_key)
-            else:
-                # Search in payload for mentions
-                text_to_search = ""
-                if event.source_type == 'github':
-                    text_to_search = event.raw_payload.get('pull_request', {}).get('title', '') + " " + \
-                                     event.raw_payload.get('pull_request', {}).get('body', '')
-                elif event.source_type == 'slack':
-                    text_to_search = event.raw_payload.get('event', {}).get('text', '')
-                
-                keys = extract_jira_keys(text_to_search)
+            try:
+                data = preprocessor(event.raw_payload)
+            except Exception as e:
+                print(f"  [ERROR] Failed to preprocess event {event.id}: {e}")
+                continue
 
-            if keys:
-                for key in set(keys):
-                    if key not in jira_to_events:
-                        jira_to_events[key] = []
-                    jira_to_events[key].append(event)
-            else:
-                orphan_events.append(event)
-            
-            processed_ids.append(event.id)
+            change = ChangeEvent(
+                workspace_id=event.workspace_id,
+                source_event_id=event.id,
+                external_ticket_id=data.get("external_ticket_id"),
+                title=data.get("title", ""),
+                description=data.get("description", ""),
+                ticket_url=data.get("ticket_url", ""),
+                change_type=data.get("change_type", "unknown"),
+                component=data.get("component", "Unknown"),
+                severity=data.get("severity", "medium"),
+                linked_issues=[data["external_ticket_id"]] if data.get("external_ticket_id") else [],
+                linked_prs=[],
+                linked_threads=[],
+                actors=list(filter(None, data.get("actors", []))),
+                raw_signals=data.get("raw_signals", {}),
+            )
+            session.add(change)
+            event.processed = True
+            print(f"  [OK] {event.source_type.upper()} event {event.id} → change_event created")
 
-        # 2. Process Jira-grouped events
-        for key, events in jira_to_events.items():
-            consolidate_and_save(session, events, key)
-
-        # 3. Process orphans (e.g. PRs without Jira keys)
-        for event in orphan_events:
-            if event.source_type == 'github' and 'pull_request' in event.raw_payload:
-                consolidate_and_save(session, [event], None)
-            else:
-                # Other orphans (like Slack messages or Github stars) might not be "changes"
-                pass
-
-        # 4. State Management: Mark as processed
-        session.query(SourceEvent).filter(SourceEvent.id.in_(processed_ids)).update({"processed": True}, synchronize_session=False)
         session.commit()
         print("Processing complete.")
 
     except Exception as e:
         session.rollback()
         print(f"Error during processing: {e}")
+        raise
     finally:
         session.close()
 
-def consolidate_and_save(session, events, jira_key):
-    # Extract data from events
-    jira_event = next((e for e in events if e.source_type == 'jira'), None)
-    github_event = next((e for e in events if e.source_type == 'github' and 'pull_request' in e.raw_payload), None)
-    slack_events = [e for e in events if e.source_type == 'slack']
-    
-    # Primary event for the source_event_id linkage
-    primary_event = jira_event or github_event or (slack_events[0] if slack_events else events[0])
-    
-    workspace_id = primary_event.workspace_id
-    ticket_id = jira_key
-    title = "Consolidated Event"
-    description = ""
-    ticket_url = ""
-    
-    change_type = "unknown"
-    component = "Unknown"
-    severity = "medium"
-    linked_issues = [jira_key] if jira_key else []
-    linked_prs = []
-    linked_threads = []
-    actors = set()
-    raw_signals = {
-        "pr_merged": False,
-        "issue_resolved": False,
-        "has_slack_discussion": len(slack_events) > 0
-    }
-    
-    # Use Jira as source of truth if available
-    if jira_event:
-        issue = jira_event.raw_payload.get('issue', {})
-        fields = issue.get('fields', {})
-        title = fields.get('summary', title)
-        description = fields.get('description', "")
-        ticket_url = f"https://emiva.atlassian.net/browse/{jira_key}" if jira_key else ""
-        
-        component = fields.get('project', {}).get('name', component)
-        severity = fields.get('priority', {}).get('name', 'medium').lower()
-        actors.add(jira_event.raw_payload.get('user', {}).get('displayName'))
-        
-        jira_issue_type = fields.get('issuetype', {}).get('name')
-        change_type = determine_change_type(jira_issue_type, [], "", summary=title)
-        
-        status = fields.get('status', {}).get('name')
-        if status in ['Done', 'Resolved', 'Closed']:
-            raw_signals['issue_resolved'] = True
-
-    # Layer Github info
-    if github_event:
-        pr = github_event.raw_payload.get('pull_request', {})
-        if not jira_event:
-            title = pr.get('title', title)
-            description = pr.get('body', "")
-            ticket_url = pr.get('html_url', "")
-            component = github_event.raw_payload.get('repository', {}).get('name', component)
-        
-        linked_prs.append(pr.get('number'))
-        actors.add(pr.get('user', {}).get('login'))
-        
-        if change_type == "unknown":
-            labels = [l.get('name') for l in pr.get('labels', [])]
-            change_type = determine_change_type(None, labels, pr.get('title'), summary=title)
-            
-        if pr.get('merged') or github_event.raw_payload.get('action') == 'closed':
-             raw_signals['pr_merged'] = True
-
-    # Layer Slack info
-    for se in slack_events:
-        thread_ts = se.raw_payload.get('event', {}).get('thread_ts')
-        if thread_ts:
-            linked_threads.append(thread_ts)
-        actors.add(se.raw_payload.get('event', {}).get('user'))
-
-    # Check if a ChangeEvent for this Jira key already exists
-    existing_change = None
-    if jira_key:
-        # Use JSON function if supported, or just simple check
-        existing_change = session.query(ChangeEvent).filter(ChangeEvent.linked_issues.contains(jira_key)).first()
-
-    if existing_change:
-        # Update existing
-        existing_change.linked_prs = list(set(existing_change.linked_prs + linked_prs))
-        existing_change.linked_threads = list(set(existing_change.linked_threads + linked_threads))
-        existing_change.actors = list(set(existing_change.actors + list(filter(None, actors))))
-        existing_change.raw_signals.update(raw_signals)
-        print(f"Updated ChangeEvent for {jira_key}")
-    else:
-        # Create new
-        new_change = ChangeEvent(
-            workspace_id=workspace_id,
-            source_event_id=primary_event.id,
-            external_ticket_id=ticket_id,
-            title=title,
-            description=description,
-            ticket_url=ticket_url,
-            change_type=change_type,
-            component=component,
-            severity=severity,
-            linked_issues=linked_issues,
-            linked_prs=linked_prs,
-            linked_threads=linked_threads,
-            actors=list(filter(None, actors)),
-            raw_signals=raw_signals
-        )
-        session.add(new_change)
-        print(f"Created new ChangeEvent for {jira_key or 'Orphan'}")
-
-if __name__ == "__main__":
-    process_unprocessed_events()
 
 if __name__ == "__main__":
     process_unprocessed_events()
